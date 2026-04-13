@@ -1,0 +1,111 @@
+name: AI Test Suggestions
+
+on:
+  workflow_call:
+    inputs:
+      repo_type:
+        description: "Type of repository: frontend | dotnet | terraform"
+        type: string
+        required: true
+    secrets:
+      GEMINI_API_KEY:
+        required: true
+
+jobs:
+  ai-test-suggestions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > diff.txt
+
+      - name: Set repo-specific test framework
+        id: framework
+        run: |
+          REPO_TYPE="${{ inputs.repo_type }}"
+
+          if [ "$REPO_TYPE" = "frontend" ]; then
+            FRAMEWORK="Jest and React Testing Library. Include unit tests for components and hooks, and integration tests for user interactions."
+          elif [ "$REPO_TYPE" = "dotnet" ]; then
+            FRAMEWORK="xUnit and Moq. Include unit tests for services/controllers, mock dependencies, and test edge cases and null inputs."
+          elif [ "$REPO_TYPE" = "terraform" ]; then
+            FRAMEWORK="Terratest (Go). Include tests for resource creation, variable validation, and output verification."
+          else
+            FRAMEWORK="appropriate testing framework for the language."
+          fi
+
+          echo "framework=$FRAMEWORK" >> $GITHUB_OUTPUT
+
+      - name: Generate test suggestions
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          DIFF=$(cat diff.txt | head -c 6000)
+          REPO_TYPE="${{ inputs.repo_type }}"
+          FRAMEWORK="${{ steps.framework.outputs.framework }}"
+
+          PROMPT="You are a senior $REPO_TYPE engineer and testing expert.
+          Based on this diff, suggest tests that should be written using $FRAMEWORK
+
+          Return your suggestions in this format:
+
+          ## 🧪 Suggested Tests
+
+          For each new or modified function/component, suggest 2-3 test cases:
+
+          ### [Function/Component Name]
+          - **Test 1:** [What to test and why]
+          - **Test 2:** [What to test and why]
+          - **Edge case:** [An edge or failure case to cover]
+
+          ## 📊 Coverage Assessment
+          Brief note on what % of new code appears to have test coverage and what's missing.
+
+          Only suggest tests for code that was added or changed in this diff. Be specific and practical.
+
+          DIFF:
+          $DIFF"
+
+          RESPONSE=$(curl -s \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$GEMINI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"contents\": [{
+                \"parts\": [{
+                  \"text\": $(echo "$PROMPT" | jq -Rs .)
+                }]
+              }],
+              \"generationConfig\": {
+                \"temperature\": 0.3,
+                \"maxOutputTokens\": 1024
+              }
+            }")
+
+          echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text' > tests.txt
+
+          if [ ! -s tests.txt ]; then
+            echo "⚠️ AI test suggestions could not be generated." > tests.txt
+          fi
+
+      - name: Post test suggestions
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const suggestions = fs.readFileSync('tests.txt', 'utf8');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🧪 AI Test Suggestions (${{ inputs.repo_type }})\n\n${suggestions}\n\n---\n*Powered by Gemini 2.0 Flash · [devops-templates](https://github.com/${{ github.repository_owner }}/devops-templates)*`
+            });

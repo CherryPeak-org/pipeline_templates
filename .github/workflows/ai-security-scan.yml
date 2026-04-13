@@ -1,0 +1,110 @@
+name: AI Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      repo_type:
+        description: "Type of repository: frontend | dotnet | terraform"
+        type: string
+        required: true
+    secrets:
+      GEMINI_API_KEY:
+        required: true
+
+jobs:
+  ai-security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > diff.txt
+
+      - name: Set repo-specific security rules
+        id: security
+        run: |
+          REPO_TYPE="${{ inputs.repo_type }}"
+
+          if [ "$REPO_TYPE" = "frontend" ]; then
+            RULES="XSS vulnerabilities, exposed API keys or tokens in JS/env files, insecure use of dangerouslySetInnerHTML, missing Content Security Policy, open redirect risks, insecure localStorage usage of sensitive data."
+          elif [ "$REPO_TYPE" = "dotnet" ]; then
+            RULES="SQL injection, hardcoded credentials or secrets, insecure deserialization, missing input validation, exposed stack traces, weak authentication/authorization, unencrypted sensitive data, CORS misconfiguration."
+          elif [ "$REPO_TYPE" = "terraform" ]; then
+            RULES="Hardcoded secrets or passwords, overly permissive IAM policies (e.g. Action: '*'), open security groups (0.0.0.0/0 on sensitive ports), unencrypted storage (S3, RDS, EBS), publicly accessible resources, missing audit logging, unversioned S3 buckets."
+          else
+            RULES="Common security vulnerabilities including hardcoded secrets, injection attacks, insecure configurations."
+          fi
+
+          echo "rules=$RULES" >> $GITHUB_OUTPUT
+
+      - name: Run AI security scan
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          DIFF=$(cat diff.txt | head -c 8000)
+          REPO_TYPE="${{ inputs.repo_type }}"
+          RULES="${{ steps.security.outputs.rules }}"
+
+          PROMPT="You are a security engineer specializing in $REPO_TYPE applications.
+          Scan this diff ONLY for security vulnerabilities. Focus on: $RULES
+
+          Return your findings in this exact format:
+
+          ## 🔴 Critical Issues
+          Issues that MUST be fixed before merging. If none, write 'None found.'
+
+          ## 🟡 Warnings
+          Issues that should be reviewed. If none, write 'None found.'
+
+          ## 🟢 Security Verdict
+          PASS or FAIL — one word followed by one sentence reason.
+
+          Be precise. Only flag real security issues, not general code quality.
+
+          DIFF:
+          $DIFF"
+
+          RESPONSE=$(curl -s \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$GEMINI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"contents\": [{
+                \"parts\": [{
+                  \"text\": $(echo "$PROMPT" | jq -Rs .)
+                }]
+              }],
+              \"generationConfig\": {
+                \"temperature\": 0.1,
+                \"maxOutputTokens\": 800
+              }
+            }")
+
+          echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text' > security.txt
+
+          if [ ! -s security.txt ]; then
+            echo "⚠️ AI security scan could not be completed." > security.txt
+          fi
+
+      - name: Post security scan results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const result = fs.readFileSync('security.txt', 'utf8');
+            const isFail = result.includes('FAIL');
+            const badge = isFail ? '🔴 Security issues detected' : '🟢 Security scan passed';
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🔐 AI Security Scan — ${badge}\n\n${result}\n\n---\n*Powered by Gemini 2.0 Flash · [devops-templates](https://github.com/${{ github.repository_owner }}/devops-templates)*`
+            });

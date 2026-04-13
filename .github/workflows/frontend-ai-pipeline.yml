@@ -1,0 +1,45 @@
+# ============================================================
+# DROP THIS FILE INTO YOUR FRONTEND REPO AT:
+# .github/workflows/ai-pipeline.yml
+#
+# REQUIREMENTS:
+# - Add GEMINI_API_KEY as an org-level secret in GitHub
+#   Org Settings → Secrets → Actions → New org secret
+# - Get free API key at: https://aistudio.google.com
+# ============================================================
+
+name: AI Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+
+  pr-description:
+    uses: YOUR-ORG/devops-templates/.github/workflows/ai-pr-description.yml@main
+    with:
+      repo_type: frontend
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+  code-review:
+    uses: YOUR-ORG/devops-templates/.github/workflows/ai-pr-review.yml@main
+    with:
+      repo_type: frontend
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+  security-scan:
+    uses: YOUR-ORG/devops-templates/.github/workflows/ai-security-scan.yml@main
+    with:
+      repo_type: frontend
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+  test-suggestions:
+    uses: YOUR-ORG/devops-templates/.github/workflows/ai-test-suggestions.yml@main
+    with:
+      repo_type: frontend
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
