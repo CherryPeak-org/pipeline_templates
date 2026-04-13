@@ -89,7 +89,9 @@ jobs:
                 \"maxOutputTokens\": 1024
               }
             }")
-
+          
+          # Debug: print raw response to logs
+          echo "RAW RESPONSE: $RESPONSE"
           echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text' > review.txt
 
           if [ ! -s review.txt ]; then
